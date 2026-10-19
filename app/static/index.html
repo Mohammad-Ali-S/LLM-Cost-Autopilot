@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cost Autopilot</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1a1d23; --muted: #667085; --line: #e3e6eb;
+    --accent: #2f6fed; --cheap: #1f9d55; --mid: #d98a00; --premium: #c9372c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14161a; --card: #1e2127; --text: #e8eaee; --muted: #9aa3b2; --line: #2e333b; --accent: #6b9bff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  .sub { color: var(--muted); margin-bottom: 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  label { font-size: 13px; color: var(--muted); }
+  input, select, textarea, button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  textarea { width: 100%; min-height: 96px; resize: vertical; }
+  input.grow { flex: 1; min-width: 200px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .step { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--bg); }
+  .step .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .step .v { font-weight: 600; margin-top: 2px; word-break: break-word; }
+  .step .d { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .step.on { border-color: var(--accent); }
+  .bar { position: relative; height: 12px; background: var(--line); border-radius: 6px; overflow: hidden; }
+  .bar > i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
+  .comp { display: grid; grid-template-columns: 200px 1fr 60px; gap: 10px; align-items: center; margin: 6px 0; font-size: 13px; }
+  .scale { position: relative; height: 26px; border-radius: 6px; overflow: hidden; display: flex; margin: 8px 0 4px; }
+  .scale span { display: flex; align-items: center; justify-content: center; font-size: 12px; color: #fff; }
+  .marker { position: absolute; top: -2px; bottom: -2px; width: 3px; background: var(--text); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; }
+  .tbl { overflow-x: auto; }
+  .tag { padding: 1px 8px; border-radius: 10px; font-size: 12px; color: #fff; }
+  .tag.cheap { background: var(--cheap); } .tag.mid { background: var(--mid); } .tag.premium { background: var(--premium); }
+  .err { color: var(--premium); margin-top: 8px; }
+  .muted { color: var(--muted); }
+  pre { margin: 0; white-space: pre-wrap; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>LLM Cost Autopilot</h1>
+  <div class="sub">See how each prompt is scored, routed and priced.</div>
+
+  <div class="card">
+    <div class="row">
+      <input id="key" class="grow" type="password" placeholder="API key (sk-ap-...)" autocomplete="off">
+      <select id="mode" title="Routing mode">
+        <option value="balanced">balanced</option>
+        <option value="cheap">cheap</option>
+        <option value="quality">quality</option>
+      </select>
+      <input id="model" placeholder="requested model" value="gpt-4o" size="16" title="Model your client would normally ask for (savings baseline)">
+      <select id="cur" title="Display currency">
+        <option value="USD">USD ($)</option>
+        <option value="INR">INR (₹)</option>
+      </select>
+      <input id="rate" type="number" step="0.01" value="85" style="width:80px" title="USD to INR rate (display only)">
+      <label><input id="gst" type="checkbox"> +18% GST</label>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Prompt</h2>
+    <textarea id="prompt" placeholder="Type a prompt, or pick an example below"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button class="primary" id="explain">Explain routing (dry run)</button>
+      <button id="send">Send for real</button>
+      <span class="muted">Examples:</span>
+      <button data-ex="What is the capital of France?">Simple</button>
+      <button data-ex="First analyze the trade-offs between Postgres and DynamoDB for a multi-tenant billing system, then design the schema step by step and refactor this code:&#10;```python&#10;def f(x): return x&#10;```">Complex</button>
+    </div>
+    <div id="error" class="err"></div>
+  </div>
+
+  <div class="card" id="pipeline" hidden>
+    <h2>Pipeline</h2>
+    <div class="steps" id="steps"></div>
+  </div>
+
+  <div class="card" id="scorecard" hidden>
+    <h2>Why this tier? <span class="muted" id="scoretxt"></span></h2>
+    <div id="comps"></div>
+    <div class="scale" id="scale"></div>
+    <div class="muted" style="font-size:12px">Marker shows the complexity score against each tier's threshold.</div>
+  </div>
+
+  <div class="card" id="replycard" hidden>
+    <h2>Response</h2>
+    <pre id="reply"></pre>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">Recent requests</h2>
+      <button id="refresh">Refresh</button>
+    </div>
+    <div id="totals" class="muted" style="margin:8px 0"></div>
+    <div class="tbl"><table>
+      <thead><tr><th>Time</th><th>Asked</th><th>Routed</th><th>Tier</th><th>Score</th><th>Tokens</th><th>Cost</th><th>Saved</th><th>ms</th><th>Cache</th><th>Status</th></tr></thead>
+      <tbody id="recent"></tbody>
+    </table></div>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
+                set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+for (const id of ["key", "model", "cur", "rate", "mode"]) {
+  const saved = store.get("ap_" + id);
+  if (saved) $(id).value = saved;
+  $(id).addEventListener("change", () => { store.set("ap_" + id, $(id).value); render(); });
+}
+$("gst").addEventListener("change", render);
+
+const TIER_COLORS = { cheap: "var(--cheap)", mid: "var(--mid)", premium: "var(--premium)" };
+
+function money(usd) {
+  usd = Number(usd) || 0;
+  const gst = $("gst").checked ? 1.18 : 1;
+  if ($("cur").value === "INR") {
+    const v = usd * (Number($("rate").value) || 0) * gst;
+    return "₹" + v.toLocaleString("en-IN", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+  }
+  return "$" + (usd * gst).toFixed(6);
+}
+
+function headers() {
+  return { "Content-Type": "application/json", "Authorization": "Bearer " + $("key").value.trim(),
+           "x-autopilot-mode": $("mode").value };
+}
+function body(extra) {
+  return JSON.stringify({ model: $("model").value.trim() || "gpt-4o",
+    messages: [{ role: "user", content: $("prompt").value }], ...extra });
+}
+function fail(msg) { $("error").textContent = msg || ""; }
+
+let last = null;   // last explain result, re-rendered when currency changes
+
+function step(k, v, d, on) {
+  return `<div class="step ${on ? "on" : ""}"><div class="k">${k}</div><div class="v">${v}</div><div class="d">${d || ""}</div></div>`;
+}
+
+function render() {
+  if (!last) return;
+  const e = last;
+  const b = e.budget;
+  const pct = b.daily_budget_usd ? Math.round(100 * b.daily_spend_usd / b.daily_budget_usd) : 0;
+  const saved = e.baseline_cost_usd - e.estimated_cost_usd;
+  $("pipeline").hidden = false;
+  $("steps").innerHTML = [
+    step("1. Budget", b.state.toUpperCase(), `${pct}% of daily cap used`, b.state !== "ok"),
+    step("2. Cache", e.cacheable ? "Eligible" : "Skipped", e.cacheable ? "exact-match lookup" : "stream / temp > 0 / n > 1"),
+    step("3. Complexity", e.score.toFixed(2), `~${e.estimated_prompt_tokens} prompt tokens`),
+    step("4. Tier", `<span class="tag ${e.tier}">${e.tier}</span>`, `mode: ${e.mode}${e.escalated ? " • escalated" : ""}${e.override ? " • override" : ""}`, true),
+    step("5. Model chain", e.chain[0], "fallback: " + (e.chain.slice(1).join(" → ") || "none")),
+    step("6. Est. input cost", money(e.estimated_cost_usd), `vs ${money(e.baseline_cost_usd)} on ${e.requested_model}`),
+    step("Est. saving", money(saved), saved > 0 ? "input side only" : "no saving"),
+  ].join("");
+
+  $("scorecard").hidden = false;
+  $("scoretxt").textContent = `score ${e.score.toFixed(4)} → ${e.tier}`;
+  $("comps").innerHTML = e.components.map((c) => `
+    <div class="comp"><span>${c.name} <span class="muted">(w ${c.weight})</span></span>
+      <div class="bar"><i style="width:${Math.round(c.value * 100)}%"></i></div>
+      <span>+${c.contribution.toFixed(3)}</span></div>`).join("");
+
+  const tiers = Object.entries(e.thresholds).sort((a, b) => a[1] - b[1]);
+  let prev = 0;
+  $("scale").innerHTML = tiers.map(([name, max]) => {
+    const w = (max - prev) * 100; prev = max;
+    return `<span style="width:${w}%;background:${TIER_COLORS[name] || "var(--accent)"}">${name} ≤ ${max}</span>`;
+  }).join("") + `<div class="marker" style="left:${Math.min(e.score, 1) * 100}%"></div>`;
+}
+
+async function call(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) {
+    let msg = res.status + " " + res.statusText;
+    try { const j = await res.json(); msg = JSON.stringify(j.detail || j); } catch {}
+    throw new Error(msg);
+  }
+  return res;
+}
+
+async function explain() {
+  fail();
+  if (!$("prompt").value.trim()) return fail("Enter a prompt first.");
+  try {
+    const res = await call("/v1/autopilot/explain", { method: "POST", headers: headers(), body: body() });
+    last = await res.json();
+    render();
+  } catch (e) { fail(e.message); }
+}
+
+async function send() {
+  fail();
+  if (!$("prompt").value.trim()) return fail("Enter a prompt first.");
+  $("send").disabled = true;
+  try {
+    await explain();
+    const res = await call("/v1/chat/completions", { method: "POST", headers: headers(), body: body() });
+    const data = await res.json();
+    $("replycard").hidden = false;
+    $("reply").textContent = data.choices?.[0]?.message?.content ?? JSON.stringify(data, null, 2);
+    const h = (n) => res.headers.get(n);
+    if (last) {
+      last.chain = [h("x-autopilot-model"), ...last.chain.filter((m) => m !== h("x-autopilot-model"))];
+      last.estimated_cost_usd = parseFloat(h("x-autopilot-cost-usd"));
+      last.baseline_cost_usd = last.estimated_cost_usd + parseFloat(h("x-autopilot-savings-usd"));
+      render();
+    }
+    await loadRecent();
+  } catch (e) { fail(e.message); }
+  finally { $("send").disabled = false; }
+}
+
+async function loadRecent() {
+  try {
+    const res = await call("/v1/autopilot/recent?limit=25", { headers: headers() });
+    const rows = (await res.json()).requests;
+    const cost = rows.reduce((s, r) => s + r.cost_usd, 0);
+    const base = rows.reduce((s, r) => s + r.baseline_cost_usd, 0);
+    $("totals").textContent = rows.length
+      ? `Last ${rows.length}: spent ${money(cost)} vs ${money(base)} baseline — saved ${money(base - cost)}` +
+        (base ? ` (${Math.round(100 * (base - cost) / base)}%)` : "")
+      : "No requests yet.";
+    $("recent").innerHTML = rows.map((r) => `<tr>
+      <td>${new Date(r.ts).toLocaleTimeString()}</td><td>${r.requested_model}</td><td>${r.routed_model}</td>
+      <td><span class="tag ${r.tier}">${r.tier}</span></td><td>${r.complexity.toFixed(2)}</td><td>${r.tokens}</td>
+      <td>${money(r.cost_usd)}</td><td>${money(r.baseline_cost_usd - r.cost_usd)}</td>
+      <td>${r.latency_ms}</td><td>${r.cache_hit ? "hit" : "–"}</td><td>${r.status}</td></tr>`).join("");
+  } catch (e) { $("totals").textContent = "Recent requests unavailable: " + e.message; }
+}
+
+$("explain").addEventListener("click", explain);
+$("send").addEventListener("click", send);
+$("refresh").addEventListener("click", loadRecent);
+document.querySelectorAll("[data-ex]").forEach((b) =>
+  b.addEventListener("click", () => { $("prompt").value = b.dataset.ex; explain(); }));
+if ($("key").value) loadRecent();
+</script>
+</body>
+</html>
